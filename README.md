@@ -73,38 +73,37 @@ docker-compose exec db psql -U <DB_USER>
 
 Replace `<DB_USER>` with the actual database user name from your `.env` file.
 
-    ## API Usage
+## API Usage
 
-    ### Creating a User
+### Creating a User
 
-    To create a user via the API, send a POST request to `http://localhost:3000/api/user/` with the following JSON
-    payload:
+To create a user via the API, send a POST request to `http://localhost:3000/api/user/` with the following JSON
+payload:
 
-    ```json
-    {
-    "username": "johndoe",
-    "email": "johndoe@test.com",
-    "password": "1234567890"
-    }
-    ```
+```json
+{
+  "username": "johndoe",
+  "email": "johndoe@test.com",
+  "password": "1234567890"
+}
+```
 
-    You can use tools like `curl`, Postman, or any HTTP client in your programming language of choice.
+You can use tools like `curl`, Postman, or any HTTP client in your programming language of choice.
 
-    ## Troubleshooting
+## Troubleshooting
 
-    Ensure all environment variables are set correctly in your `.env` file, as incorrect settings may prevent the
-    services from starting properly.
+Ensure all environment variables are set correctly in your `.env` file, as incorrect settings may prevent the
+services from starting properly.
 
-    Check the Docker logs if any service fails to start:
+Check the Docker logs if any service fails to start:
 
-    ```sh
-    docker-compose logs <service-name>
-      ```
+```sh
+docker-compose logs <service-name>
+```
 
-      Replace `<service-name>` with `web`, `db`, or `pgadmin` to view logs for a specific service.
+Replace `<service-name>` with `web`, `db`, or `pgadmin` to view logs for a specific service.
 
-        ---
+---
 
-        For further details, refer to the Go Fiber, Docker, and PostgreSQL documentation. This setup is ideal for
-        development environments and should be adapted for production use with security best practices.
-        ```
+For further details, refer to the Go Fiber, Docker, and PostgreSQL documentation. This setup is ideal for
+development environments and should be adapted for production use with security best practices.
