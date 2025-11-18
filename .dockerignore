@@ -1,0 +1,60 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp
+
+# Dependencies
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Air hot-reload temporary files
+air.log
+
+# Build artifacts
+*.exe
+*.out
+bin/
+dist/
+
+# Test coverage
+coverage.txt
+*.test
+
+# Database files
+*.db
+*.sqlite
+*.sql
+
+# Docker
+Dockerfile*
+docker-compose*
+!Dockerfile
+!docker-compose.yml

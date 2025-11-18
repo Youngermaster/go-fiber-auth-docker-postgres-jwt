@@ -3,65 +3,24 @@ package handler
 import (
 	"app/database"
 	"app/model"
-	"strconv"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
-func hashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
-	return string(bytes), err
+// UserResponse represents the user data returned to clients (without sensitive fields)
+type UserResponse struct {
+	ID        uint   `json:"id"`
+	Username  string `json:"username"`
+	Email     string `json:"email"`
+	Names     string `json:"names"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
-func validToken(t *jwt.Token, id string) bool {
-	n, err := strconv.Atoi(id)
-	if err != nil {
-		return false
-	}
-
-	claims := t.Claims.(jwt.MapClaims)
-	uid := int(claims["user_id"].(float64))
-
-	return uid == n
-}
-
-func validUser(id string, p string) bool {
-	db := database.DB
-	var user model.User
-	db.First(&user, id)
-	if user.Username == "" {
-		return false
-	}
-	if !CheckPasswordHash(p, user.Password) {
-		return false
-	}
-	return true
-}
-
-// GetUser get a user
-func GetUser(c *fiber.Ctx) error {
-	type UserResponse struct {
-		ID        uint   `json:"id"`
-		Username  string `json:"username"`
-		Email     string `json:"email"`
-		Names     string `json:"names"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}
-
-	id := c.Params("id")
-	db := database.DB
-	var user model.User
-	db.Find(&user, id)
-	if user.Username == "" {
-		return c.Status(404).JSON(fiber.Map{"status": "error", "message": "No user found with ID", "data": nil})
-	}
-
-	// Return user data without password hash
-	userResponse := UserResponse{
+// toUserResponse converts a User model to UserResponse
+func toUserResponse(user *model.User) UserResponse {
+	return UserResponse{
 		ID:        user.ID,
 		Username:  user.Username,
 		Email:     user.Email,
@@ -69,116 +28,158 @@ func GetUser(c *fiber.Ctx) error {
 		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt: user.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
-
-	return c.JSON(fiber.Map{"status": "success", "message": "User found", "data": userResponse})
 }
 
-// CreateUser new user
+// GetUser retrieves a user by ID
+func GetUser(c *fiber.Ctx) error {
+	id := c.Params("id")
+	db := database.DB
+	var user model.User
+
+	if err := db.First(&user, id).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusNotFound, "User not found", nil)
+	}
+
+	return SuccessResponse(c, "User found", toUserResponse(&user))
+}
+
+// CreateUser creates a new user (registration)
 func CreateUser(c *fiber.Ctx) error {
-	type NewUser struct {
-		Username string `json:"username"`
-		Email    string `json:"email"`
+	type CreateUserInput struct {
+		Username string `json:"username" validate:"required,min=3,max=50"`
+		Email    string `json:"email" validate:"required,email"`
+		Password string `json:"password" validate:"required,min=8,max=100"`
+		Names    string `json:"names" validate:"max=255"`
+	}
+
+	input := new(CreateUserInput)
+	if err := c.BodyParser(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
+	}
+
+	// Validate input
+	validate := validator.New()
+	if err := validate.Struct(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Validation failed", err.Error())
+	}
+
+	// Normalize input
+	input.Email = NormalizeEmail(input.Email)
+	input.Username = NormalizeUsername(input.Username)
+	input.Names = SanitizeString(input.Names, 255)
+
+	// Validate password strength
+	if err := ValidatePasswordStrength(input.Password); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, err.Error(), nil)
+	}
+
+	// Hash password
+	hashedPassword, err := HashPassword(input.Password)
+	if err != nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to process password", nil)
+	}
+
+	// Create user
+	user := model.User{
+		Username: input.Username,
+		Email:    input.Email,
+		Password: hashedPassword,
+		Names:    input.Names,
 	}
 
 	db := database.DB
-	user := new(model.User)
-	if err := c.BodyParser(user); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
-	}
-
-	validate := validator.New()
-	if err := validate.Struct(user); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request body", "errors": err.Error()})
-	}
-
-	hash, err := hashPassword(user.Password)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Failed to hash password", "errors": err.Error()})
-	}
-
-	user.Password = hash
 	if err := db.Create(&user).Error; err != nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"status": "error", "message": "User with this email or username already exists", "errors": err.Error()})
+		// Check for duplicate email/username
+		return ErrorResponseJSON(c, fiber.StatusConflict, "User with this email or username already exists", nil)
 	}
 
-	newUser := NewUser{
-		Email:    user.Email,
-		Username: user.Username,
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "success", "message": "Created user", "data": newUser})
+	return CreatedResponse(c, "User created successfully", toUserResponse(&user))
 }
 
-// UpdateUser update user
+// UpdateUser updates user information
 func UpdateUser(c *fiber.Ctx) error {
 	type UpdateUserInput struct {
-		Names string `json:"names"`
+		Names string `json:"names" validate:"max=255"`
 	}
-	var uui UpdateUserInput
-	if err := c.BodyParser(&uui); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
-	}
-	id := c.Params("id")
-	token := c.Locals("user").(*jwt.Token)
 
-	if !validToken(token, id) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"status": "error", "message": "You don't have permission to update this user", "data": nil})
+	id := c.Params("id")
+
+	// Verify ownership - user can only update their own profile
+	if !ValidateTokenOwnership(c, id) {
+		return ErrorResponseJSON(c, fiber.StatusForbidden, "You don't have permission to update this user", nil)
 	}
+
+	input := new(UpdateUserInput)
+	if err := c.BodyParser(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
+	}
+
+	// Validate input
+	validate := validator.New()
+	if err := validate.Struct(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Validation failed", err.Error())
+	}
+
+	// Sanitize input
+	input.Names = SanitizeString(input.Names, 255)
 
 	db := database.DB
 	var user model.User
 
-	db.First(&user, id)
-	user.Names = uui.Names
-	db.Save(&user)
-
-	// Return user data without password hash
-	type UserResponse struct {
-		ID        uint   `json:"id"`
-		Username  string `json:"username"`
-		Email     string `json:"email"`
-		Names     string `json:"names"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
+	if err := db.First(&user, id).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusNotFound, "User not found", nil)
 	}
 
-	userResponse := UserResponse{
-		ID:        user.ID,
-		Username:  user.Username,
-		Email:     user.Email,
-		Names:     user.Names,
-		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt: user.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	// Update only allowed fields
+	user.Names = input.Names
+
+	if err := db.Save(&user).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to update user", nil)
 	}
 
-	return c.JSON(fiber.Map{"status": "success", "message": "User successfully updated", "data": userResponse})
+	return SuccessResponse(c, "User updated successfully", toUserResponse(&user))
 }
 
-// DeleteUser delete user
+// DeleteUser deletes a user account
 func DeleteUser(c *fiber.Ctx) error {
-	type PasswordInput struct {
-		Password string `json:"password"`
+	type DeleteUserInput struct {
+		Password string `json:"password" validate:"required"`
 	}
-	var pi PasswordInput
-	if err := c.BodyParser(&pi); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
-	}
+
 	id := c.Params("id")
-	token := c.Locals("user").(*jwt.Token)
 
-	if !validToken(token, id) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"status": "error", "message": "You don't have permission to delete this user", "data": nil})
+	// Verify ownership - user can only delete their own account
+	if !ValidateTokenOwnership(c, id) {
+		return ErrorResponseJSON(c, fiber.StatusForbidden, "You don't have permission to delete this user", nil)
 	}
 
-	if !validUser(id, pi.Password) {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid password", "data": nil})
+	input := new(DeleteUserInput)
+	if err := c.BodyParser(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
+	}
+
+	// Validate input
+	validate := validator.New()
+	if err := validate.Struct(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Validation failed", err.Error())
 	}
 
 	db := database.DB
 	var user model.User
 
-	db.First(&user, id)
+	if err := db.First(&user, id).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusNotFound, "User not found", nil)
+	}
 
-	db.Delete(&user)
-	return c.JSON(fiber.Map{"status": "success", "message": "User successfully deleted", "data": nil})
+	// Verify password before deletion (security measure)
+	if !CheckPasswordHash(input.Password, user.Password) {
+		return ErrorResponseJSON(c, fiber.StatusUnauthorized, "Invalid password", nil)
+	}
+
+	// Soft delete (GORM's default with gorm.Model)
+	if err := db.Delete(&user).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to delete user", nil)
+	}
+
+	return SuccessResponse(c, "User deleted successfully", nil)
 }

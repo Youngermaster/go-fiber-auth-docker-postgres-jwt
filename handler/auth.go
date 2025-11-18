@@ -5,21 +5,13 @@ import (
 	"app/database"
 	"app/model"
 	"errors"
-	"net/mail"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
 )
-
-// CheckPasswordHash compare password with hash
-func CheckPasswordHash(password, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil
-}
 
 func getUserByEmail(e string) (*model.User, error) {
 	db := database.DB
@@ -45,69 +37,60 @@ func getUserByUsername(u string) (*model.User, error) {
 	return &user, nil
 }
 
-func valid(email string) bool {
-	_, err := mail.ParseAddress(email)
-	return err == nil
-}
-
-// Login get user and password
+// Login authenticates a user and returns a JWT token
 func Login(c *fiber.Ctx) error {
 	type LoginInput struct {
-		Identity string `json:"identity"`
-		Password string `json:"password"`
+		Identity string `json:"identity" validate:"required"`
+		Password string `json:"password" validate:"required"`
 	}
-	type UserData struct {
-		ID       uint   `json:"id"`
-		Username string `json:"username"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+
 	input := new(LoginInput)
-	var ud UserData
-
 	if err := c.BodyParser(input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Error on login request", "errors": err.Error()})
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
 	}
 
-	identity := input.Identity
+	identity := NormalizeEmail(input.Identity) // Normalize for consistency
 	pass := input.Password
-	userModel, err := new(model.User), *new(error)
 
-	if valid(identity) {
+	var userModel *model.User
+	var err error
+
+	// Try to find user by email or username
+	if ValidateEmail(identity) {
 		userModel, err = getUserByEmail(identity)
 	} else {
-		userModel, err = getUserByUsername(identity)
+		userModel, err = getUserByUsername(NormalizeUsername(identity))
 	}
-	
+
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Internal Server Error", "data": err})
-	} else if userModel == nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Internal server error", nil)
+	}
+
+	// If user not found, still check password hash to prevent timing attacks
+	if userModel == nil {
 		CheckPasswordHash(pass, "")
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid identity or password", "data": err})
-	} else {
-		ud = UserData{
-			ID:       userModel.ID,
-			Username: userModel.Username,
-			Email:    userModel.Email,
-			Password: userModel.Password,
-		}
+		return ErrorResponseJSON(c, fiber.StatusUnauthorized, "Invalid credentials", nil)
 	}
 
-	if !CheckPasswordHash(pass, ud.Password) {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid identity or password", "data": nil})
+	// Verify password
+	if !CheckPasswordHash(pass, userModel.Password) {
+		return ErrorResponseJSON(c, fiber.StatusUnauthorized, "Invalid credentials", nil)
 	}
 
+	// Generate JWT token
 	token := jwt.New(jwt.SigningMethodHS256)
-
 	claims := token.Claims.(jwt.MapClaims)
-	claims["username"] = ud.Username
-	claims["user_id"] = ud.ID
-	claims["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	claims["username"] = userModel.Username
+	claims["user_id"] = userModel.ID
+	claims["exp"] = time.Now().Add(time.Hour * 72).Unix() // TODO: Reduce to 15-30 minutes and implement refresh tokens
 
-	t, err := token.SignedString([]byte(config.Config("SECRET")))
+	signedToken, err := token.SignedString([]byte(config.Config("SECRET")))
 	if err != nil {
-		return c.SendStatus(fiber.StatusInternalServerError)
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to generate token", nil)
 	}
 
-	return c.JSON(fiber.Map{"status": "success", "message": "Success login", "data": t})
+	return SuccessResponse(c, "Login successful", fiber.Map{
+		"token": signedToken,
+		"user":  toUserResponse(userModel),
+	})
 }

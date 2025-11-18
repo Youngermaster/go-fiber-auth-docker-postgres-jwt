@@ -6,62 +6,81 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
 )
 
-// GetAllProducts query all products with pagination
+// ProductResponse represents the product data returned to clients
+type ProductResponse struct {
+	ID          uint   `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Amount      int    `json:"amount"`
+	UserID      uint   `json:"user_id"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// toProductResponse converts a Product model to ProductResponse
+func toProductResponse(product *model.Product) ProductResponse {
+	return ProductResponse{
+		ID:          product.ID,
+		Title:       product.Title,
+		Description: product.Description,
+		Amount:      product.Amount,
+		UserID:      product.UserID,
+		CreatedAt:   product.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:   product.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+// GetAllProducts retrieves all products with pagination
 func GetAllProducts(c *fiber.Ctx) error {
 	db := database.DB
 	var products []model.Product
 
-	// Pagination parameters
-	page := c.QueryInt("page", 1)
-	limit := c.QueryInt("limit", 10)
-
-	// Validate pagination parameters
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 || limit > 100 {
-		limit = 10
-	}
-
-	offset := (page - 1) * limit
+	// Get and validate pagination parameters
+	page, limit := GetPaginationParams(c)
+	offset := CalculateOffset(page, limit)
 
 	// Get total count
 	var total int64
 	db.Model(&model.Product{}).Count(&total)
 
 	// Get products with pagination
-	db.Limit(limit).Offset(offset).Find(&products)
+	if err := db.Limit(limit).Offset(offset).Order("created_at DESC").Find(&products).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to fetch products", nil)
+	}
 
-	return c.JSON(fiber.Map{
-		"status":  "success",
-		"message": "All products",
-		"data":    products,
-		"meta": fiber.Map{
-			"page":       page,
-			"limit":      limit,
-			"total":      total,
-			"totalPages": (total + int64(limit) - 1) / int64(limit),
+	// Convert to response format
+	productResponses := make([]ProductResponse, len(products))
+	for i, product := range products {
+		productResponses[i] = toProductResponse(&product)
+	}
+
+	return SuccessResponse(c, "Products retrieved successfully", fiber.Map{
+		"products": productResponses,
+		"meta": PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: CalculateTotalPages(total, limit),
 		},
 	})
 }
 
-// GetProduct query product
+// GetProduct retrieves a single product by ID
 func GetProduct(c *fiber.Ctx) error {
 	id := c.Params("id")
 	db := database.DB
 	var product model.Product
-	db.Find(&product, id)
-	if product.Title == "" {
-		return c.Status(404).JSON(fiber.Map{"status": "error", "message": "No product found with ID", "data": nil})
 
+	if err := db.First(&product, id).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusNotFound, "Product not found", nil)
 	}
-	return c.JSON(fiber.Map{"status": "success", "message": "Product found", "data": product})
+
+	return SuccessResponse(c, "Product found", toProductResponse(&product))
 }
 
-// CreateProduct new product
+// CreateProduct creates a new product
 func CreateProduct(c *fiber.Ctx) error {
 	type ProductInput struct {
 		Title       string `json:"title" validate:"required,min=1,max=255"`
@@ -69,23 +88,26 @@ func CreateProduct(c *fiber.Ctx) error {
 		Amount      int    `json:"amount" validate:"required,min=0"`
 	}
 
-	db := database.DB
 	input := new(ProductInput)
-
 	if err := c.BodyParser(input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
 	}
 
 	// Validate input
 	validate := validator.New()
 	if err := validate.Struct(input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Validation failed", "errors": err.Error()})
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Validation failed", err.Error())
 	}
 
+	// Sanitize input
+	input.Title = SanitizeString(input.Title, 255)
+	input.Description = SanitizeString(input.Description, 2000)
+
 	// Get user ID from JWT token
-	token := c.Locals("user").(*jwt.Token)
-	claims := token.Claims.(jwt.MapClaims)
-	userID := uint(claims["user_id"].(float64))
+	userID, err := GetUserIDFromToken(c)
+	if err != nil {
+		return ErrorResponseJSON(c, fiber.StatusUnauthorized, "Invalid token", nil)
+	}
 
 	product := model.Product{
 		Title:       input.Title,
@@ -94,34 +116,97 @@ func CreateProduct(c *fiber.Ctx) error {
 		UserID:      userID,
 	}
 
+	db := database.DB
 	if err := db.Create(&product).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Failed to create product", "errors": err.Error()})
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to create product", nil)
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "success", "message": "Created product", "data": product})
+	return CreatedResponse(c, "Product created successfully", toProductResponse(&product))
 }
 
-// DeleteProduct delete product
+// UpdateProduct updates an existing product
+func UpdateProduct(c *fiber.Ctx) error {
+	type UpdateProductInput struct {
+		Title       string `json:"title" validate:"omitempty,min=1,max=255"`
+		Description string `json:"description" validate:"omitempty,min=1,max=2000"`
+		Amount      int    `json:"amount" validate:"omitempty,min=0"`
+	}
+
+	id := c.Params("id")
+	db := database.DB
+
+	// Get user ID from token
+	userID, err := GetUserIDFromToken(c)
+	if err != nil {
+		return ErrorResponseJSON(c, fiber.StatusUnauthorized, "Invalid token", nil)
+	}
+
+	// Find product
+	var product model.Product
+	if err := db.First(&product, id).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusNotFound, "Product not found", nil)
+	}
+
+	// Verify ownership
+	if product.UserID != userID {
+		return ErrorResponseJSON(c, fiber.StatusForbidden, "You don't have permission to update this product", nil)
+	}
+
+	// Parse input
+	input := new(UpdateProductInput)
+	if err := c.BodyParser(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
+	}
+
+	// Validate input
+	validate := validator.New()
+	if err := validate.Struct(input); err != nil {
+		return ErrorResponseJSON(c, fiber.StatusBadRequest, "Validation failed", err.Error())
+	}
+
+	// Update only provided fields
+	if input.Title != "" {
+		product.Title = SanitizeString(input.Title, 255)
+	}
+	if input.Description != "" {
+		product.Description = SanitizeString(input.Description, 2000)
+	}
+	if input.Amount >= 0 {
+		product.Amount = input.Amount
+	}
+
+	if err := db.Save(&product).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to update product", nil)
+	}
+
+	return SuccessResponse(c, "Product updated successfully", toProductResponse(&product))
+}
+
+// DeleteProduct deletes a product
 func DeleteProduct(c *fiber.Ctx) error {
 	id := c.Params("id")
 	db := database.DB
 
-	// Get user ID from JWT token
-	token := c.Locals("user").(*jwt.Token)
-	claims := token.Claims.(jwt.MapClaims)
-	userID := uint(claims["user_id"].(float64))
+	// Get user ID from token
+	userID, err := GetUserIDFromToken(c)
+	if err != nil {
+		return ErrorResponseJSON(c, fiber.StatusUnauthorized, "Invalid token", nil)
+	}
 
 	var product model.Product
-	db.First(&product, id)
-	if product.Title == "" {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"status": "error", "message": "No product found with ID", "data": nil})
+	if err := db.First(&product, id).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusNotFound, "Product not found", nil)
 	}
 
-	// Check if the user owns the product
+	// Verify ownership
 	if product.UserID != userID {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"status": "error", "message": "You don't have permission to delete this product", "data": nil})
+		return ErrorResponseJSON(c, fiber.StatusForbidden, "You don't have permission to delete this product", nil)
 	}
 
-	db.Delete(&product)
-	return c.JSON(fiber.Map{"status": "success", "message": "Product successfully deleted", "data": nil})
+	// Soft delete (GORM's default with gorm.Model)
+	if err := db.Delete(&product).Error; err != nil {
+		return ErrorResponseJSON(c, fiber.StatusInternalServerError, "Failed to delete product", nil)
+	}
+
+	return SuccessResponse(c, "Product deleted successfully", nil)
 }
