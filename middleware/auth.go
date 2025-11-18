@@ -7,10 +7,16 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// Protected protect routes
+// Protected validates JWT access tokens and protects routes
 func Protected() fiber.Handler {
+	// Use ACCESS_TOKEN_SECRET, fallback to SECRET for backward compatibility
+	secret := config.Config("ACCESS_TOKEN_SECRET")
+	if secret == "" {
+		secret = config.Config("SECRET")
+	}
+
 	return jwtware.New(jwtware.Config{
-		SigningKey:   jwtware.SigningKey{Key: []byte(config.Config("SECRET"))},
+		SigningKey:   jwtware.SigningKey{Key: []byte(secret)},
 		ErrorHandler: jwtError,
 	})
 }
