@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v2"
-	// "github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func main() {
@@ -15,9 +15,17 @@ func main() {
 		CaseSensitive: true,
 		StrictRouting: true,
 		ServerHeader:  "Fiber",
-		AppName:       "App Name",
+		AppName:       "Go Fiber Auth API",
 	})
-	// app.Use(cors.New())
+
+	// CORS middleware with secure defaults
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     "http://localhost:3000,http://localhost:3001",
+		AllowMethods:     "GET,POST,PATCH,DELETE",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
 
 	database.ConnectDB()
 

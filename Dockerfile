@@ -1,14 +1,20 @@
-FROM golang:1.21@sha256:cffaba795c36f07e372c7191b35ceaae114d74c31c3763d442982e3a4df3b39e
+FROM golang:1.24-alpine
 
-# Enviroment variable
-WORKDIR /usr/src/some-api
+# Environment variable
+WORKDIR /usr/src/app
 
+# Install Air for hot-reloading in development
 RUN go install github.com/cosmtrek/air@latest
 
-#Copying files to work directory
-COPY go.mod ./
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
 RUN go mod download && go mod verify
+
+# Copy source code
 COPY . .
 
-# Run and expose the server on port 3000
+# Expose the server on port 3000
 EXPOSE 3000
+
+# Air will be used for hot-reloading during development
+# For production, use: CMD ["go", "run", "cmd/main.go"]

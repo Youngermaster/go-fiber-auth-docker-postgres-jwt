@@ -20,8 +20,15 @@ func ConnectDB() {
 		panic("failed to parse database port")
 	}
 
+	// Get database host from environment variable, default to "db" for Docker
+	dbHost := config.Config("DB_HOST")
+	if dbHost == "" {
+		dbHost = "db"
+	}
+
 	dsn := fmt.Sprintf(
-		"host=db port=%d user=%s password=%s dbname=%s sslmode=disable",
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		dbHost,
 		port,
 		config.Config("DB_USER"),
 		config.Config("DB_PASSWORD"),

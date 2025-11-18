@@ -43,6 +43,15 @@ func validUser(id string, p string) bool {
 
 // GetUser get a user
 func GetUser(c *fiber.Ctx) error {
+	type UserResponse struct {
+		ID        uint   `json:"id"`
+		Username  string `json:"username"`
+		Email     string `json:"email"`
+		Names     string `json:"names"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+
 	id := c.Params("id")
 	db := database.DB
 	var user model.User
@@ -50,7 +59,18 @@ func GetUser(c *fiber.Ctx) error {
 	if user.Username == "" {
 		return c.Status(404).JSON(fiber.Map{"status": "error", "message": "No user found with ID", "data": nil})
 	}
-	return c.JSON(fiber.Map{"status": "success", "message": "User found", "data": user})
+
+	// Return user data without password hash
+	userResponse := UserResponse{
+		ID:        user.ID,
+		Username:  user.Username,
+		Email:     user.Email,
+		Names:     user.Names,
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt: user.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+
+	return c.JSON(fiber.Map{"status": "success", "message": "User found", "data": userResponse})
 }
 
 // CreateUser new user
@@ -63,7 +83,7 @@ func CreateUser(c *fiber.Ctx) error {
 	db := database.DB
 	user := new(model.User)
 	if err := c.BodyParser(user); err != nil {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Review your input", "errors": err.Error()})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
 	}
 
 	validate := validator.New()
@@ -73,12 +93,12 @@ func CreateUser(c *fiber.Ctx) error {
 
 	hash, err := hashPassword(user.Password)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Couldn't hash password", "errors": err.Error()})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Failed to hash password", "errors": err.Error()})
 	}
 
 	user.Password = hash
 	if err := db.Create(&user).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Couldn't create user", "errors": err.Error()})
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"status": "error", "message": "User with this email or username already exists", "errors": err.Error()})
 	}
 
 	newUser := NewUser{
@@ -86,7 +106,7 @@ func CreateUser(c *fiber.Ctx) error {
 		Username: user.Username,
 	}
 
-	return c.JSON(fiber.Map{"status": "success", "message": "Created user", "data": newUser})
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "success", "message": "Created user", "data": newUser})
 }
 
 // UpdateUser update user
@@ -96,13 +116,13 @@ func UpdateUser(c *fiber.Ctx) error {
 	}
 	var uui UpdateUserInput
 	if err := c.BodyParser(&uui); err != nil {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Review your input", "errors": err.Error()})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
 	}
 	id := c.Params("id")
 	token := c.Locals("user").(*jwt.Token)
 
 	if !validToken(token, id) {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Invalid token id", "data": nil})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"status": "error", "message": "You don't have permission to update this user", "data": nil})
 	}
 
 	db := database.DB
@@ -112,7 +132,26 @@ func UpdateUser(c *fiber.Ctx) error {
 	user.Names = uui.Names
 	db.Save(&user)
 
-	return c.JSON(fiber.Map{"status": "success", "message": "User successfully updated", "data": user})
+	// Return user data without password hash
+	type UserResponse struct {
+		ID        uint   `json:"id"`
+		Username  string `json:"username"`
+		Email     string `json:"email"`
+		Names     string `json:"names"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+
+	userResponse := UserResponse{
+		ID:        user.ID,
+		Username:  user.Username,
+		Email:     user.Email,
+		Names:     user.Names,
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt: user.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+
+	return c.JSON(fiber.Map{"status": "success", "message": "User successfully updated", "data": userResponse})
 }
 
 // DeleteUser delete user
@@ -122,19 +161,17 @@ func DeleteUser(c *fiber.Ctx) error {
 	}
 	var pi PasswordInput
 	if err := c.BodyParser(&pi); err != nil {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Review your input", "errors": err.Error()})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid request body", "errors": err.Error()})
 	}
 	id := c.Params("id")
 	token := c.Locals("user").(*jwt.Token)
 
 	if !validToken(token, id) {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Invalid token id", "data": nil})
-
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"status": "error", "message": "You don't have permission to delete this user", "data": nil})
 	}
 
 	if !validUser(id, pi.Password) {
-		return c.Status(500).JSON(fiber.Map{"status": "error", "message": "Not valid user", "data": nil})
-
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid password", "data": nil})
 	}
 
 	db := database.DB
